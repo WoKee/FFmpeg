@@ -217,6 +217,24 @@ int ffurl_connect(URLContext *uc, AVDictionary **options)
     av_assert0(!(e=av_dict_get(*options, "protocol_blacklist", NULL, 0)) ||
                (uc->protocol_blacklist && !strcmp(uc->protocol_blacklist, e->value)));
 
+    // ========== 新增代码开始（核心修改） ==========
+    // 强制给白名单补充 file 协议（FFmpeg 8.0 适配）
+    if (uc->protocol_whitelist) {
+        // 若已有白名单，追加 file（避免覆盖）
+        char *new_whitelist = av_asprintf("%s,file", uc->protocol_whitelist);
+        av_free(uc->protocol_whitelist); // 释放原有指针，避免内存泄漏
+        uc->protocol_whitelist = new_whitelist;
+    } else if (uc->prot->default_whitelist) {
+        // 若使用协议默认白名单，追加 file
+        char *new_default = av_asprintf("%s,file", uc->prot->default_whitelist);
+        av_free(uc->protocol_whitelist); // 即使为空，free 也安全
+        uc->protocol_whitelist = new_default;
+    } else {
+        // 若无任何白名单，直接设置包含 file 的默认值
+        uc->protocol_whitelist = av_strdup("http,https,tls,rtp,tcp,udp,crypto,httpproxy,data,file");
+    }
+    // ========== 新增代码结束 ==========
+    
     if (uc->protocol_whitelist && av_match_list(uc->prot->name, uc->protocol_whitelist, ',') <= 0) {
         av_log(uc, AV_LOG_ERROR, "Protocol '%s' not on whitelist '%s'!\n", uc->prot->name, uc->protocol_whitelist);
         return AVERROR(EINVAL);
