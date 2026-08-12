@@ -16,59 +16,78 @@ jobs:
           - arch: aarch64
             abi: arm64-v8a
             triple: aarch64-linux-android
+            cpu: armv8-a
             api: 24
           - arch: armv7a
             abi: armeabi-v7a
             triple: armv7a-linux-androideabi
+            cpu: armv7-a
             api: 24
           - arch: x86_64
             abi: x86_64
             triple: x86_64-linux-android
+            cpu: generic
             api: 24
           - arch: i686
             abi: x86
             triple: i686-linux-android
+            cpu: generic
             api: 24
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install Android NDK
+      - name: Setup Android NDK
         run: |
-          NDK_VERSION="r27c"
-          wget -q https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip -O ndk.zip
-          unzip -q ndk.zip -d /opt/android
-          echo "ANDROID_NDK_HOME=/opt/android/android-ndk-${NDK_VERSION}" >> $GITHUB_ENV
-          rm ndk.zip
+          set -x
+          # Use pre-installed NDK on GitHub runners, or download if not available
+          if [ -d "$ANDROID_NDK_HOME" ]; then
+            echo "Using pre-installed NDK: $ANDROID_NDK_HOME"
+          elif [ -d "$ANDROID_NDK_ROOT" ]; then
+            echo "ANDROID_NDK_HOME=$ANDROID_NDK_ROOT" >> $GITHUB_ENV
+            echo "Using pre-installed NDK: $ANDROID_NDK_ROOT"
+          elif [ -d "/usr/local/lib/android/sdk/ndk" ]; then
+            NDK_PATH=$(ls -d /usr/local/lib/android/sdk/ndk/*/ 2>/dev/null | sort -V | tail -1)
+            echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
+            echo "Found NDK at: $NDK_PATH"
+          else
+            echo "Downloading NDK r27c..."
+            NDK_VERSION="r27c"
+            wget -q https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip -O ndk.zip
+            unzip -q ndk.zip -d /opt/android
+            echo "ANDROID_NDK_HOME=/opt/android/android-ndk-${NDK_VERSION}" >> $GITHUB_ENV
+            rm ndk.zip
+          fi
 
-      - name: Configure FFmpeg for ${{ matrix.abi }}
-        env:
-          TOOLCHAIN: ${{ env.ANDROID_NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64
+      - name: Configure and Build FFmpeg for ${{ matrix.abi }}
         run: |
-          export PATH="${TOOLCHAIN}/bin:$PATH"
-          export CC="${{ matrix.triple }}${{ matrix.api }}-clang"
-          export CXX="${{ matrix.triple }}${{ matrix.api }}-clang++"
-          export AR="llvm-ar"
-          export AS="llvm-as"
-          export LD="lld"
-          export RANLIB="llvm-ranlib"
-          export STRIP="llvm-strip"
-          export NM="llvm-nm"
+          set -x
+          NDK="$ANDROID_NDK_HOME"
+          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          echo "NDK: $NDK"
+          echo "TOOLCHAIN: $TOOLCHAIN"
+          ls -la "$TOOLCHAIN/bin/" | head -20
+
+          export PATH="$TOOLCHAIN/bin:$PATH"
+
+          # Verify compiler exists
+          CC="${{ matrix.triple }}${{ matrix.api }}-clang"
+          which "$CC" || { echo "ERROR: $CC not found"; ls "$TOOLCHAIN/bin/" | grep clang; exit 1; }
 
           ./configure \
             --target-os=android \
             --arch=${{ matrix.arch }} \
-            --cpu=${{ matrix.arch }} \
+            --cpu=${{ matrix.cpu }} \
             --cross-prefix="${{ matrix.triple }}-" \
-            --cc="${CC}" \
-            --cxx="${CXX}" \
-            --ar="${AR}" \
-            --as="${AS}" \
-            --ld="${LD}" \
-            --ranlib="${RANLIB}" \
-            --strip="${STRIP}" \
-            --nm="${NM}" \
+            --cc="$CC" \
+            --cxx="${{ matrix.triple }}${{ matrix.api }}-clang++" \
+            --ar=llvm-ar \
+            --as=llvm-as \
+            --ld=lld \
+            --ranlib=llvm-ranlib \
+            --strip=llvm-strip \
+            --nm=llvm-nm \
             --enable-shared \
             --disable-static \
             --disable-programs \
@@ -80,10 +99,8 @@ jobs:
             --disable-stripping \
             --disable-autodetect \
             --enable-cross-compile \
-            --prefix=$(pwd)/build/${{ matrix.abi }}
+            --prefix="$(pwd)/build/${{ matrix.abi }}" || { echo "CONFIGURE FAILED with exit code $?"; cat ffbuild/config.log 2>/dev/null | tail -50; exit 1; }
 
-      - name: Build FFmpeg for ${{ matrix.abi }}
-        run: |
           make -j$(nproc)
           make install
 
