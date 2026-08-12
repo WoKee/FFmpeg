@@ -34,27 +34,31 @@ jobs:
         run: |
           set -ex
 
-          # Download NDK
-          NDK_VER="r27c"
+          # Download NDK if needed
           if [ -n "$ANDROID_NDK_HOME" ] && [ -d "$ANDROID_NDK_HOME" ]; then
             NDK="$ANDROID_NDK_HOME"
           else
-            wget -q "https://dl.google.com/android/repository/android-ndk-${NDK_VER}-linux.zip" -O /tmp/n.zip
+            wget -q "https://dl.google.com/android/repository/android-ndk-r27c-linux.zip" -O /tmp/n.zip
             unzip -q /tmp/n.zip -d /opt
-            NDK="/opt/android-ndk-${NDK_VER}"
+            NDK="/opt/android-ndk-r27c"
           fi
-          echo "NDK=$NDK"
           export PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
 
           CC=${{ matrix.triple }}24-clang
-          echo "CC=$CC"
-          which $CC || { echo "CC not found"; ls $NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/*clang*; exit 1; }
+          CXX=${{ matrix.triple }}24-clang++
 
           ./configure \
             --target-os=android \
             --arch=${{ matrix.arch }} \
             --cross-prefix=${{ matrix.triple }}- \
             --cc=$CC \
+            --cxx=$CXX \
+            --ar=llvm-ar \
+            --as=llvm-as \
+            --ld=lld \
+            --ranlib=llvm-ranlib \
+            --strip=llvm-strip \
+            --nm=llvm-nm \
             --enable-cross-compile \
             --enable-shared \
             --disable-static \
@@ -62,11 +66,15 @@ jobs:
             --disable-doc \
             --disable-asm \
             --disable-symver \
+            --disable-stripping \
             --prefix=$(pwd)/out/${{ matrix.abi }} \
             > /tmp/configure.log 2>&1 || { echo "CONFIGURE FAILED"; cat /tmp/configure.log | tail -80; exit 1; }
 
-          make -j$(nproc)
+          echo "=== Configure done, starting make ==="
+          make -j$(nproc) > /tmp/make.log 2>&1 || { echo "MAKE FAILED"; tail -80 /tmp/make.log; exit 1; }
+
           make install
+          echo "=== Build complete ==="
           ls -la out/${{ matrix.abi }}/lib/
 
       - name: Upload ${{ matrix.abi }}
@@ -85,8 +93,7 @@ jobs:
         with:
           path: output
       - name: Zip
-        run: |
-          cd output && zip -r ../ffmpeg-android.zip . && cd ..
+        run: cd output && zip -r ../ffmpeg-android.zip . && cd ..
       - name: Upload
         uses: actions/upload-artifact@v4
         with:
