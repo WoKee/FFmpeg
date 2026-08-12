@@ -42,23 +42,25 @@ jobs:
             unzip -q /tmp/n.zip -d /opt
             NDK="/opt/android-ndk-r27c"
           fi
-          export PATH="$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
+          TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          export PATH="$TC/bin:$PATH"
 
           CC=${{ matrix.triple }}24-clang
           CXX=${{ matrix.triple }}24-clang++
 
+          # Configure - use absolute paths for tools
           ./configure \
             --target-os=android \
             --arch=${{ matrix.arch }} \
             --cross-prefix=${{ matrix.triple }}- \
-            --cc=$CC \
-            --cxx=$CXX \
-            --ar=llvm-ar \
-            --as=llvm-as \
-            --ld=lld \
-            --ranlib=llvm-ranlib \
-            --strip=llvm-strip \
-            --nm=llvm-nm \
+            --cc=$TC/bin/$CC \
+            --cxx=$TC/bin/$CXX \
+            --ar=$TC/bin/llvm-ar \
+            --as=$TC/bin/llvm-as \
+            --ld=$TC/bin/lld \
+            --ranlib=$TC/bin/llvm-ranlib \
+            --strip=$TC/bin/llvm-strip \
+            --nm=$TC/bin/llvm-nm \
             --enable-cross-compile \
             --enable-shared \
             --disable-static \
@@ -68,7 +70,7 @@ jobs:
             --disable-symver \
             --disable-stripping \
             --prefix=$(pwd)/out/${{ matrix.abi }} \
-            > /tmp/configure.log 2>&1 || { echo "CONFIGURE FAILED"; cat /tmp/configure.log | tail -80; exit 1; }
+            > /tmp/configure.log 2>&1 || { echo "CONFIGURE FAILED"; tail -80 /tmp/configure.log; exit 1; }
 
           echo "=== Configure done, starting make ==="
           make -j$(nproc) > /tmp/make.log 2>&1 || { echo "MAKE FAILED"; tail -80 /tmp/make.log; exit 1; }
