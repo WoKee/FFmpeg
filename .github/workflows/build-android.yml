@@ -35,7 +35,7 @@ jobs:
           set -ex
 
           # Download NDK if needed
-          if [ -n "$ANDROID_NDK_HOME" ] && [ -d "$ANDROID_NDK_HOME" ]; then
+          if [ -n "$ANDROID_NDK_HOME" ] && [ -d "$ANDROID_NDK_HOME/toolchains/llvm" ]; then
             NDK="$ANDROID_NDK_HOME"
           else
             wget -q "https://dl.google.com/android/repository/android-ndk-r27c-linux.zip" -O /tmp/n.zip
@@ -45,22 +45,22 @@ jobs:
           TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
           export PATH="$TC/bin:$PATH"
 
-          CC=${{ matrix.triple }}24-clang
-          CXX=${{ matrix.triple }}24-clang++
+          # Set env vars for cross-compilation tools
+          export AR=llvm-ar
+          export AS=llvm-as
+          export CC=${{ matrix.triple }}24-clang
+          export CXX=${{ matrix.triple }}24-clang++
+          export LD=lld
+          export RANLIB=llvm-ranlib
+          export STRIP=llvm-strip
+          export NM=llvm-nm
 
-          # Configure - use absolute paths for tools
           ./configure \
             --target-os=android \
             --arch=${{ matrix.arch }} \
             --cross-prefix=${{ matrix.triple }}- \
-            --cc=$TC/bin/$CC \
-            --cxx=$TC/bin/$CXX \
-            --ar=$TC/bin/llvm-ar \
-            --as=$TC/bin/llvm-as \
-            --ld=$TC/bin/lld \
-            --ranlib=$TC/bin/llvm-ranlib \
-            --strip=$TC/bin/llvm-strip \
-            --nm=$TC/bin/llvm-nm \
+            --cc=$CC \
+            --cxx=$CXX \
             --enable-cross-compile \
             --enable-shared \
             --disable-static \
