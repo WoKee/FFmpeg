@@ -1,0 +1,117 @@
+name: Build Android FFmpeg .so
+
+on:
+  push:
+    branches:
+      - release-9.0-fongmi
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: aarch64
+            abi: arm64-v8a
+            triple: aarch64-linux-android
+            api: 24
+          - arch: armv7a
+            abi: armeabi-v7a
+            triple: armv7a-linux-androideabi
+            api: 24
+          - arch: x86_64
+            abi: x86_64
+            triple: x86_64-linux-android
+            api: 24
+          - arch: i686
+            abi: x86
+            triple: i686-linux-android
+            api: 24
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Android NDK
+        run: |
+          NDK_VERSION="r27c"
+          wget -q https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip -O ndk.zip
+          unzip -q ndk.zip -d /opt/android
+          echo "ANDROID_NDK_HOME=/opt/android/android-ndk-${NDK_VERSION}" >> $GITHUB_ENV
+          rm ndk.zip
+
+      - name: Configure FFmpeg for ${{ matrix.abi }}
+        env:
+          TOOLCHAIN: ${{ env.ANDROID_NDK_HOME }}/toolchains/llvm/prebuilt/linux-x86_64
+        run: |
+          export PATH="${TOOLCHAIN}/bin:$PATH"
+          export CC="${{ matrix.triple }}${{ matrix.api }}-clang"
+          export CXX="${{ matrix.triple }}${{ matrix.api }}-clang++"
+          export AR="llvm-ar"
+          export AS="llvm-as"
+          export LD="lld"
+          export RANLIB="llvm-ranlib"
+          export STRIP="llvm-strip"
+          export NM="llvm-nm"
+
+          ./configure \
+            --target-os=android \
+            --arch=${{ matrix.arch }} \
+            --cpu=${{ matrix.arch }} \
+            --cross-prefix="${{ matrix.triple }}-" \
+            --cc="${CC}" \
+            --cxx="${CXX}" \
+            --ar="${AR}" \
+            --as="${AS}" \
+            --ld="${LD}" \
+            --ranlib="${RANLIB}" \
+            --strip="${STRIP}" \
+            --nm="${NM}" \
+            --enable-shared \
+            --disable-static \
+            --disable-programs \
+            --disable-doc \
+            --disable-symver \
+            --enable-small \
+            --disable-asm \
+            --disable-debug \
+            --disable-stripping \
+            --disable-autodetect \
+            --enable-cross-compile \
+            --prefix=$(pwd)/build/${{ matrix.abi }}
+
+      - name: Build FFmpeg for ${{ matrix.abi }}
+        run: |
+          make -j$(nproc)
+          make install
+
+      - name: Upload ${{ matrix.abi }} .so files
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-${{ matrix.abi }}
+          path: build/${{ matrix.abi }}/lib/*.so
+          if-no-files-found: error
+
+  package:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: output
+
+      - name: Package into zip
+        run: |
+          cd output
+          zip -r ../ffmpeg-android-libs.zip .
+          cd ..
+
+      - name: Upload combined artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-android-libs
+          path: ffmpeg-android-libs.zip
+          if-no-files-found: error
