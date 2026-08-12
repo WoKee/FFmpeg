@@ -34,106 +34,79 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Debug environment
-        run: |
-          echo "=== Android env vars ==="
-          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
-          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
-          echo "ANDROID_HOME=$ANDROID_HOME"
-          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
-          echo "=== Find NDK ==="
-          find / -name "ndk-build" -type f 2>/dev/null | head -5
-          ls -la /usr/local/lib/android/ 2>/dev/null || echo "no /usr/local/lib/android"
-          ls -la /usr/lib/android* 2>/dev/null || echo "no /usr/lib/android"
-          echo "=== env | grep -i android ==="
-          env | grep -i android || echo "no android env vars"
-          echo "=== Done ==="
-
-      - name: Install NDK
+      - name: Install NDK and Build FFmpeg for ${{ matrix.abi }}
         run: |
           set -ex
-          # Try to find pre-installed NDK
-          FOUND_NDK=""
-          for path in "$ANDROID_NDK_HOME" "$ANDROID_NDK_ROOT" "$ANDROID_HOME/ndk-bundle" "$ANDROID_SDK_ROOT/ndk-bundle"; do
-            if [ -n "$path" ] && [ -d "$path/toolchains/llvm/prebuilt/linux-x86_64" ]; then
-              FOUND_NDK="$path"
-              break
+
+          # Find or download NDK
+          NDK=""
+          for p in "$ANDROID_NDK_HOME" "$ANDROID_NDK_ROOT"; do
+            if [ -n "$p" ] && [ -d "$p/toolchains/llvm/prebuilt/linux-x86_64" ]; then
+              NDK="$p"; break
             fi
           done
-
-          if [ -z "$FOUND_NDK" ]; then
-            # Search common locations
-            for base in /usr/local/lib/android/sdk /opt/android-sdk /usr/lib/android/sdk "$HOME/android-sdk"; do
+          if [ -z "$NDK" ]; then
+            for base in /usr/local/lib/android/sdk /opt/android-sdk; do
               if [ -d "$base/ndk" ]; then
-                FOUND_NDK=$(ls -d "$base/ndk"/*/ 2>/dev/null | sort -V | tail -1)
-                FOUND_NDK="${FOUND_NDK%/}"
-                break
+                NDK=$(find "$base/ndk" -maxdepth 1 -mindepth 1 -type d | sort -V | tail -1)
+                [ -n "$NDK" ] && break
               fi
             done
           fi
-
-          if [ -z "$FOUND_NDK" ]; then
-            echo "=== No pre-installed NDK found, downloading NDK r27c ==="
+          if [ -z "$NDK" ]; then
             wget -q "https://dl.google.com/android/repository/android-ndk-r27c-linux.zip" -O /tmp/ndk.zip
             mkdir -p /opt/android
             unzip -q /tmp/ndk.zip -d /opt/android
-            FOUND_NDK="/opt/android/android-ndk-r27c"
+            NDK="/opt/android/android-ndk-r27c"
             rm /tmp/ndk.zip
           fi
 
-          echo "FOUND_NDK=$FOUND_NDK"
-          echo "FOUND_NDK=$FOUND_NDK" >> $GITHUB_ENV
-          ls "$FOUND_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/" | head -10
-
-      - name: Configure and Build FFmpeg for ${{ matrix.abi }}
-        run: |
-          set -ex
-          NDK="$FOUND_NDK"
-          TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
-          export PATH="$TOOLCHAIN/bin:$PATH"
+          echo "NDK path: $NDK"
+          TC="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
+          export PATH="$TC/bin:$PATH"
 
           CC="${{ matrix.triple }}${{ matrix.api }}-clang"
-          CXX="${{ matrix.triple }}${{ matrix.api }}-clang++"
+          echo "Compiler: $CC"
+          which $CC
+          $CC --version
 
-          echo "=== Compiler check ==="
-          which $CC && $CC --version
+          # Build configure args
+          CONFIGURE_ARGS="
+            --target-os=android
+            --arch=${{ matrix.arch }}
+            --cross-prefix=${{ matrix.triple }}-
+            --cc=$CC
+            --cxx=${{ matrix.triple }}${{ matrix.api }}-clang++
+            --ar=llvm-ar
+            --as=llvm-as
+            --ld=lld
+            --ranlib=llvm-ranlib
+            --strip=llvm-strip
+            --nm=llvm-nm
+            --enable-cross-compile
+            --enable-shared
+            --disable-static
+            --enable-small
+            --disable-programs
+            --disable-doc
+            --disable-debug
+            --disable-symver
+            --disable-stripping
+            --disable-asm
+            --enable-threads
+            --prefix=$(pwd)/build/${{ matrix.abi }}
+          "
 
-          # Check if sysroot exists at toolchain path
-          SYSROOT="$TOOLCHAIN/sysroot"
-          EXTRA_FLAGS=""
-          if [ -d "$SYSROOT" ]; then
-            echo "=== Using sysroot: $SYSROOT ==="
-            EXTRA_FLAGS="--sysroot=$SYSROOT"
+          # Add sysroot if the directory exists
+          if [ -d "$TC/sysroot" ]; then
+            CONFIGURE_ARGS="$CONFIGURE_ARGS --sysroot=$TC/sysroot"
+            echo "Using sysroot: $TC/sysroot"
           else
-            echo "=== No sysroot dir at $SYSROOT, using extra-cflags/ldflags ==="
-            EXTRA_FLAGS="--extra-cflags=--sysroot=$SYSROOT --extra-ldflags=--sysroot=$SYSROOT"
+            echo "No sysroot dir at $TC/sysroot, skipping --sysroot"
           fi
 
-          eval ./configure \
-            --target-os=android \
-            --arch=${{ matrix.arch }} \
-            --cross-prefix=\"${{ matrix.triple }}-\" \
-            --cc=\"$CC\" \
-            --cxx=\"$CXX\" \
-            --ar=llvm-ar \
-            --as=llvm-as \
-            --ld=lld \
-            --ranlib=llvm-ranlib \
-            --strip=llvm-strip \
-            --nm=llvm-nm \
-            --enable-cross-compile \
-            $EXTRA_FLAGS \
-            --enable-shared \
-            --disable-static \
-            --enable-small \
-            --disable-programs \
-            --disable-doc \
-            --disable-debug \
-            --disable-symver \
-            --disable-stripping \
-            --disable-asm \
-            --enable-threads \
-            --prefix=\"$(pwd)/build/${{ matrix.abi }}\"
+          # Convert to array and run
+          ./configure $CONFIGURE_ARGS
 
           make -j$(nproc)
           make install
