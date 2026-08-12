@@ -98,12 +98,23 @@ jobs:
           echo "=== Compiler check ==="
           which $CC && $CC --version
 
-          ./configure \
+          # Check if sysroot exists at toolchain path
+          SYSROOT="$TOOLCHAIN/sysroot"
+          EXTRA_FLAGS=""
+          if [ -d "$SYSROOT" ]; then
+            echo "=== Using sysroot: $SYSROOT ==="
+            EXTRA_FLAGS="--sysroot=$SYSROOT"
+          else
+            echo "=== No sysroot dir at $SYSROOT, using extra-cflags/ldflags ==="
+            EXTRA_FLAGS="--extra-cflags=--sysroot=$SYSROOT --extra-ldflags=--sysroot=$SYSROOT"
+          fi
+
+          eval ./configure \
             --target-os=android \
             --arch=${{ matrix.arch }} \
-            --cross-prefix="${{ matrix.triple }}-" \
-            --cc="$CC" \
-            --cxx="$CXX" \
+            --cross-prefix=\"${{ matrix.triple }}-\" \
+            --cc=\"$CC\" \
+            --cxx=\"$CXX\" \
             --ar=llvm-ar \
             --as=llvm-as \
             --ld=lld \
@@ -111,7 +122,7 @@ jobs:
             --strip=llvm-strip \
             --nm=llvm-nm \
             --enable-cross-compile \
-            --sysroot="$TOOLCHAIN/sysroot" \
+            $EXTRA_FLAGS \
             --enable-shared \
             --disable-static \
             --enable-small \
@@ -122,7 +133,7 @@ jobs:
             --disable-stripping \
             --disable-asm \
             --enable-threads \
-            --prefix="$(pwd)/build/${{ matrix.abi }}"
+            --prefix=\"$(pwd)/build/${{ matrix.abi }}\"
 
           make -j$(nproc)
           make install
