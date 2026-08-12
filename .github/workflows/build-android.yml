@@ -16,93 +16,96 @@ jobs:
           - arch: aarch64
             abi: arm64-v8a
             triple: aarch64-linux-android
-            cpu: armv8-a
             api: 24
           - arch: armv7a
             abi: armeabi-v7a
             triple: armv7a-linux-androideabi
-            cpu: armv7-a
             api: 24
           - arch: x86_64
             abi: x86_64
             triple: x86_64-linux-android
-            cpu: generic
             api: 24
           - arch: i686
             abi: x86
             triple: i686-linux-android
-            cpu: generic
             api: 24
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup Android NDK
-        run: |
-          set -x
-          # Use pre-installed NDK on GitHub runners, or download if not available
-          if [ -d "$ANDROID_NDK_HOME" ]; then
-            echo "Using pre-installed NDK: $ANDROID_NDK_HOME"
-          elif [ -d "$ANDROID_NDK_ROOT" ]; then
-            echo "ANDROID_NDK_HOME=$ANDROID_NDK_ROOT" >> $GITHUB_ENV
-            echo "Using pre-installed NDK: $ANDROID_NDK_ROOT"
-          elif [ -d "/usr/local/lib/android/sdk/ndk" ]; then
-            NDK_PATH=$(ls -d /usr/local/lib/android/sdk/ndk/*/ 2>/dev/null | sort -V | tail -1)
-            echo "ANDROID_NDK_HOME=$NDK_PATH" >> $GITHUB_ENV
-            echo "Found NDK at: $NDK_PATH"
-          else
-            echo "Downloading NDK r27c..."
-            NDK_VERSION="r27c"
-            wget -q https://dl.google.com/android/repository/android-ndk-${NDK_VERSION}-linux.zip -O ndk.zip
-            unzip -q ndk.zip -d /opt/android
-            echo "ANDROID_NDK_HOME=/opt/android/android-ndk-${NDK_VERSION}" >> $GITHUB_ENV
-            rm ndk.zip
-          fi
-
       - name: Configure and Build FFmpeg for ${{ matrix.abi }}
         run: |
-          set -x
-          NDK="$ANDROID_NDK_HOME"
+          set -ex
+
+          # Find NDK on GitHub runner
+          if [ -n "$ANDROID_NDK_HOME" ] && [ -d "$ANDROID_NDK_HOME" ]; then
+            NDK="$ANDROID_NDK_HOME"
+          elif [ -n "$ANDROID_NDK_ROOT" ] && [ -d "$ANDROID_NDK_ROOT" ]; then
+            NDK="$ANDROID_NDK_ROOT"
+          elif [ -d "$ANDROID_HOME/ndk" ]; then
+            NDK=$(ls -d "$ANDROID_HOME/ndk"/*/ 2>/dev/null | sort -V | tail -1)
+            NDK="${NDK%/}"
+          else
+            echo "ERROR: NDK not found"
+            echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+            echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
+            echo "ANDROID_HOME=$ANDROID_HOME"
+            ls -la /usr/local/lib/android/ 2>/dev/null || true
+            ls -la $ANDROID_HOME/ndk/ 2>/dev/null || true
+            exit 1
+          fi
+
+          echo "=== NDK: $NDK ==="
           TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
-          echo "NDK: $NDK"
-          echo "TOOLCHAIN: $TOOLCHAIN"
-          ls -la "$TOOLCHAIN/bin/" | head -20
+          echo "=== TOOLCHAIN: $TOOLCHAIN ==="
+          ls "$TOOLCHAIN/bin/" | grep -i "${{ matrix.triple }}" | head -10
 
           export PATH="$TOOLCHAIN/bin:$PATH"
 
-          # Verify compiler exists
           CC="${{ matrix.triple }}${{ matrix.api }}-clang"
-          which "$CC" || { echo "ERROR: $CC not found"; ls "$TOOLCHAIN/bin/" | grep clang; exit 1; }
+          CXX="${{ matrix.triple }}${{ matrix.api }}-clang++"
 
+          echo "=== Testing compiler ==="
+          which $CC
+          $CC --version
+
+          # Configure
           ./configure \
             --target-os=android \
             --arch=${{ matrix.arch }} \
-            --cpu=${{ matrix.cpu }} \
             --cross-prefix="${{ matrix.triple }}-" \
             --cc="$CC" \
-            --cxx="${{ matrix.triple }}${{ matrix.api }}-clang++" \
+            --cxx="$CXX" \
             --ar=llvm-ar \
             --as=llvm-as \
             --ld=lld \
             --ranlib=llvm-ranlib \
             --strip=llvm-strip \
             --nm=llvm-nm \
+            --enable-cross-compile \
+            --sysroot="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot" \
             --enable-shared \
             --disable-static \
+            --enable-small \
             --disable-programs \
             --disable-doc \
-            --disable-symver \
-            --enable-small \
-            --disable-asm \
             --disable-debug \
+            --disable-symver \
             --disable-stripping \
-            --disable-autodetect \
-            --enable-cross-compile \
-            --prefix="$(pwd)/build/${{ matrix.abi }}" || { echo "CONFIGURE FAILED with exit code $?"; cat ffbuild/config.log 2>/dev/null | tail -50; exit 1; }
+            --disable-asm \
+            --enable-threads \
+            --enable-mediacodec \
+            --enable-jni \
+            --prefix="$(pwd)/build/${{ matrix.abi }}"
 
+          echo "=== Configure done, building ==="
           make -j$(nproc)
+          echo "=== Build done, installing ==="
           make install
+
+          echo "=== Output .so files ==="
+          ls -la "$(pwd)/build/${{ matrix.abi }}/lib/"
 
       - name: Upload ${{ matrix.abi }} .so files
         uses: actions/upload-artifact@v4
