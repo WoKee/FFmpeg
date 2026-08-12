@@ -34,43 +34,70 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Debug environment
+        run: |
+          echo "=== Android env vars ==="
+          echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
+          echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
+          echo "=== Find NDK ==="
+          find / -name "ndk-build" -type f 2>/dev/null | head -5
+          ls -la /usr/local/lib/android/ 2>/dev/null || echo "no /usr/local/lib/android"
+          ls -la /usr/lib/android* 2>/dev/null || echo "no /usr/lib/android"
+          echo "=== env | grep -i android ==="
+          env | grep -i android || echo "no android env vars"
+          echo "=== Done ==="
+
+      - name: Install NDK
+        run: |
+          set -ex
+          # Try to find pre-installed NDK
+          FOUND_NDK=""
+          for path in "$ANDROID_NDK_HOME" "$ANDROID_NDK_ROOT" "$ANDROID_HOME/ndk-bundle" "$ANDROID_SDK_ROOT/ndk-bundle"; do
+            if [ -n "$path" ] && [ -d "$path/toolchains/llvm/prebuilt/linux-x86_64" ]; then
+              FOUND_NDK="$path"
+              break
+            fi
+          done
+
+          if [ -z "$FOUND_NDK" ]; then
+            # Search common locations
+            for base in /usr/local/lib/android/sdk /opt/android-sdk /usr/lib/android/sdk "$HOME/android-sdk"; do
+              if [ -d "$base/ndk" ]; then
+                FOUND_NDK=$(ls -d "$base/ndk"/*/ 2>/dev/null | sort -V | tail -1)
+                FOUND_NDK="${FOUND_NDK%/}"
+                break
+              fi
+            done
+          fi
+
+          if [ -z "$FOUND_NDK" ]; then
+            echo "=== No pre-installed NDK found, downloading NDK r27c ==="
+            wget -q "https://dl.google.com/android/repository/android-ndk-r27c-linux.zip" -O /tmp/ndk.zip
+            mkdir -p /opt/android
+            unzip -q /tmp/ndk.zip -d /opt/android
+            FOUND_NDK="/opt/android/android-ndk-r27c"
+            rm /tmp/ndk.zip
+          fi
+
+          echo "FOUND_NDK=$FOUND_NDK"
+          echo "FOUND_NDK=$FOUND_NDK" >> $GITHUB_ENV
+          ls "$FOUND_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/" | head -10
+
       - name: Configure and Build FFmpeg for ${{ matrix.abi }}
         run: |
           set -ex
-
-          # Find NDK on GitHub runner
-          if [ -n "$ANDROID_NDK_HOME" ] && [ -d "$ANDROID_NDK_HOME" ]; then
-            NDK="$ANDROID_NDK_HOME"
-          elif [ -n "$ANDROID_NDK_ROOT" ] && [ -d "$ANDROID_NDK_ROOT" ]; then
-            NDK="$ANDROID_NDK_ROOT"
-          elif [ -d "$ANDROID_HOME/ndk" ]; then
-            NDK=$(ls -d "$ANDROID_HOME/ndk"/*/ 2>/dev/null | sort -V | tail -1)
-            NDK="${NDK%/}"
-          else
-            echo "ERROR: NDK not found"
-            echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
-            echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
-            echo "ANDROID_HOME=$ANDROID_HOME"
-            ls -la /usr/local/lib/android/ 2>/dev/null || true
-            ls -la $ANDROID_HOME/ndk/ 2>/dev/null || true
-            exit 1
-          fi
-
-          echo "=== NDK: $NDK ==="
+          NDK="$FOUND_NDK"
           TOOLCHAIN="$NDK/toolchains/llvm/prebuilt/linux-x86_64"
-          echo "=== TOOLCHAIN: $TOOLCHAIN ==="
-          ls "$TOOLCHAIN/bin/" | grep -i "${{ matrix.triple }}" | head -10
-
           export PATH="$TOOLCHAIN/bin:$PATH"
 
           CC="${{ matrix.triple }}${{ matrix.api }}-clang"
           CXX="${{ matrix.triple }}${{ matrix.api }}-clang++"
 
-          echo "=== Testing compiler ==="
-          which $CC
-          $CC --version
+          echo "=== Compiler check ==="
+          which $CC && $CC --version
 
-          # Configure
           ./configure \
             --target-os=android \
             --arch=${{ matrix.arch }} \
@@ -84,7 +111,7 @@ jobs:
             --strip=llvm-strip \
             --nm=llvm-nm \
             --enable-cross-compile \
-            --sysroot="$NDK/toolchains/llvm/prebuilt/linux-x86_64/sysroot" \
+            --sysroot="$TOOLCHAIN/sysroot" \
             --enable-shared \
             --disable-static \
             --enable-small \
@@ -95,16 +122,10 @@ jobs:
             --disable-stripping \
             --disable-asm \
             --enable-threads \
-            --enable-mediacodec \
-            --enable-jni \
             --prefix="$(pwd)/build/${{ matrix.abi }}"
 
-          echo "=== Configure done, building ==="
           make -j$(nproc)
-          echo "=== Build done, installing ==="
           make install
-
-          echo "=== Output .so files ==="
           ls -la "$(pwd)/build/${{ matrix.abi }}/lib/"
 
       - name: Upload ${{ matrix.abi }} .so files
